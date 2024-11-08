@@ -2,7 +2,8 @@
 
 这东西是一个注意力的东西，sigmoid它将输入的实数值映射到 (0, 1) 的区间，使输出成为一种概率或权重。所以不是融合是相乘
 
-![image-20241107095459494](C:\Users\26425\AppData\Roaming\Typora\typora-user-images\image-20241107095459494.png)
+![image](https://github.com/user-attachments/assets/44be9c51-7fc0-479c-9a72-35ce6970821a)
+
 
 ```
 class CAA(nn.Module):
