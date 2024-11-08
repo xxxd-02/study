@@ -116,71 +116,117 @@ class ConvFFN(nn.Module):
 
 #### PKIBlock
 
-![image-20241106213250401](C:\Users\26425\AppData\Roaming\Typora\typora-user-images\image-20241106213250401.png)
+![image](https://github.com/user-attachments/assets/f2097d6f-12fb-4f3b-a89a-5ac8b8842f7f)
+
 
 ```
-class PKIBlock(BaseModule):
-    """Poly Kernel Inception Block"""
+class CAA(nn.Module):
+    """上下文锚点注意力模块"""
+    def __init__(
+            self,
+            channels: int,                     # 输入通道数
+            h_kernel_size: int = 11,           # 水平卷积核大小
+            v_kernel_size: int = 11,           # 垂直卷积核大小
+            norm_cfg: Optional[dict] = dict(type='BN', momentum=0.03, eps=0.001),  # 归一化配置
+            act_cfg: Optional[dict] = dict(type='SiLU')):                         # 激活函数配置
+        super().__init__()
+        # 平均池化层
+        self.avg_pool = nn.AvgPool2d(7, 1, 3)
+        # 1x1卷积模块，用于调整通道数
+        self.conv1 = ConvModule(channels, channels, 1, 1, 0,
+                                norm_cfg=norm_cfg, act_cfg=act_cfg)
+        # 水平卷积模块，使用1xh_kernel_size的卷积核，仅在水平方向上进行卷积
+        self.h_conv = ConvModule(channels, channels, (1, h_kernel_size), 1,
+                                 (0, h_kernel_size // 2), groups=channels,
+                                 norm_cfg=None, act_cfg=None)
+        # 垂直卷积模块，使用v_kernel_sizex1的卷积核，仅在垂直方向上进行卷积
+        self.v_conv = ConvModule(channels, channels, (v_kernel_size, 1), 1,
+                                 (v_kernel_size // 2, 0), groups=channels,
+                                 norm_cfg=None, act_cfg=None)
+        # 1x1卷积模块，用于进一步调整通道数
+        self.conv2 = ConvModule(channels, channels, 1, 1, 0,
+                                norm_cfg=norm_cfg, act_cfg=act_cfg)
+        # 使用Sigmoid激活函数
+        self.act = nn.Sigmoid()
+
+    # 前向传播函数
+    def forward(self, x):
+        # 通过平均池化、卷积和激活函数计算注意力系数
+        attn_factor = self.act(self.conv2(self.v_conv(self.h_conv(self.conv1(self.avg_pool(x))))))
+        # x与生成的注意力系数相乘，生成增强后特征图
+        x = x*attn_factor
+        return x
+
+class InceptionBottleneck(nn.Module):
+    """Bottleneck with Inception module"""
     def __init__(
             self,
             in_channels: int,
-            out_channels: Optional[int] = None,
+            out_channels: int,
             kernel_sizes: Sequence[int] = (3, 5, 7, 9, 11),
             dilations: Sequence[int] = (1, 1, 1, 1, 1),
+            expansion: float = 1.0,
+            add_identity: bool = True,
             with_caa: bool = True,
             caa_kernel_size: int = 11,
-            expansion: float = 1.0,
-            ffn_scale: float = 4.0,
-            ffn_kernel_size: int = 3,
-            dropout_rate: float = 0.,
-            drop_path_rate: float = 0.,
-            layer_scale: Optional[float] = 1.0,
-            add_identity: bool = True,
             norm_cfg: Optional[dict] = dict(type='BN', momentum=0.03, eps=0.001),
             act_cfg: Optional[dict] = dict(type='SiLU'),
             init_cfg: Optional[dict] = None,
     ):
-        super().__init__(init_cfg)
-        out_channels = out_channels or in_channels
-        hidden_channels = make_divisible(int(out_channels * expansion), 8)
+        super().__init__()
+        out_channels = out_channels
+        hidden_channels = make_divisible(int(out_channels * expansion), 8)   #通道数调整为最接近的、能被 8 整除的值
 
-        if norm_cfg is not None:
-            self.norm1 = build_norm_layer(norm_cfg, in_channels)[1]
-            self.norm2 = build_norm_layer(norm_cfg, hidden_channels)[1]
+        self.pre_conv = ConvModule(in_channels, hidden_channels, 1, 1, 0, 1,
+                                   norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        self.dw_conv = ConvModule(hidden_channels, hidden_channels, kernel_sizes[0], 1,
+                                  autopad(kernel_sizes[0], None, dilations[0]), dilations[0],
+                                  groups=hidden_channels, norm_cfg=None, act_cfg=None)
+        self.dw_conv1 = ConvModule(hidden_channels, hidden_channels, kernel_sizes[1], 1,
+                                   autopad(kernel_sizes[1], None, dilations[1]), dilations[1],
+                                   groups=hidden_channels, norm_cfg=None, act_cfg=None)
+        self.dw_conv2 = ConvModule(hidden_channels, hidden_channels, kernel_sizes[2], 1,
+                                   autopad(kernel_sizes[2], None, dilations[2]), dilations[2],
+                                   groups=hidden_channels, norm_cfg=None, act_cfg=None)
+        self.dw_conv3 = ConvModule(hidden_channels, hidden_channels, kernel_sizes[3], 1,
+                                   autopad(kernel_sizes[3], None, dilations[3]), dilations[3],
+                                   groups=hidden_channels, norm_cfg=None, act_cfg=None)
+        self.dw_conv4 = ConvModule(hidden_channels, hidden_channels, kernel_sizes[4], 1,
+                                   autopad(kernel_sizes[4], None, dilations[4]), dilations[4],
+                                   groups=hidden_channels, norm_cfg=None, act_cfg=None)
+        self.pw_conv = ConvModule(hidden_channels, hidden_channels, 1, 1, 0, 1,
+                                  norm_cfg=norm_cfg, act_cfg=act_cfg)
+
+        if with_caa:
+            self.caa_factor = CAA(hidden_channels, caa_kernel_size, caa_kernel_size, None, None)  #True
         else:
-            self.norm1 = nn.BatchNorm2d(in_channels)
-            self.norm2 = nn.BatchNorm2d(hidden_channels)
+            self.caa_factor = None
 
-        self.block = InceptionBottleneck(in_channels, hidden_channels, kernel_sizes, dilations,
-                                         expansion=1.0, add_identity=True,
-                                         with_caa=with_caa, caa_kernel_size=caa_kernel_size,
-                                         norm_cfg=norm_cfg, act_cfg=act_cfg)
-        self.ffn = ConvFFN(hidden_channels, out_channels, ffn_scale, ffn_kernel_size, dropout_rate, add_identity=False,
-                           norm_cfg=None, act_cfg=None)
-        self.drop_path = DropPath(drop_path_rate) if drop_path_rate > 0 else nn.Identity()
-
-        self.layer_scale = layer_scale
-        if self.layer_scale:
-            self.gamma1 = nn.Parameter(layer_scale * torch.ones(hidden_channels), requires_grad=True)
-            self.gamma2 = nn.Parameter(layer_scale * torch.ones(out_channels), requires_grad=True)
         self.add_identity = add_identity and in_channels == out_channels
 
+        self.post_conv = ConvModule(hidden_channels, out_channels, 1, 1, 0, 1,
+                                    norm_cfg=norm_cfg, act_cfg=act_cfg)         #转输出通道数的
+    
     def forward(self, x):
-        if self.layer_scale:
-            if self.add_identity:
-                x = x + self.drop_path(self.gamma1.unsqueeze(-1).unsqueeze(-1) * self.block(self.norm1(x)))
-                x = x + self.drop_path(self.gamma2.unsqueeze(-1).unsqueeze(-1) * self.ffn(self.norm2(x)))
-            else:
-                x = self.drop_path(self.gamma1.unsqueeze(-1).unsqueeze(-1) * self.block(self.norm1(x)))
-                x = self.drop_path(self.gamma2.unsqueeze(-1).unsqueeze(-1) * self.ffn(self.norm2(x)))
+        x = self.pre_conv(x)
+
+        y = x  # if there is an inplace operation of x, use y = x.clone() instead of y = x
+        x = self.dw_conv(x)
+        x = x + self.dw_conv1(x) + self.dw_conv2(x) + self.dw_conv3(x) 
+        # + self.dw_conv4(x)
+        x = self.pw_conv(x)
+        if self.caa_factor is not None:
+            y = self.caa_factor(y)
+        if self.add_identity:
+            y = x * y
+            x = x + y
         else:
-            if self.add_identity:
-                x = x + self.drop_path(self.block(self.norm1(x)))
-                x = x + self.drop_path(self.ffn(self.norm2(x)))
-            else:
-                x = self.drop_path(self.block(self.norm1(x)))
-                x = self.drop_path(self.ffn(self.norm2(x)))
+            x = x * y
+
+        x = self.post_conv(x)
         return x
+
 ```
 
 
@@ -189,7 +235,8 @@ class PKIBlock(BaseModule):
 
 
 
-![image-20241106213359922](C:\Users\26425\AppData\Roaming\Typora\typora-user-images\image-20241106213359922.png)
+![image](https://github.com/user-attachments/assets/ea8880b9-aaf5-435d-b2d0-bc2d1af35e30)
+
 
 
 
