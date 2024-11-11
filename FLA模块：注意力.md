@@ -1,5 +1,8 @@
 #### FLA模块：注意力
 
+![image](https://github.com/user-attachments/assets/882ce2b8-9e88-4ff3-b77a-61cadd9bd133)
+
+
 ```
 
 import torch
